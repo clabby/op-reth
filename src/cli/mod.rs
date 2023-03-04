@@ -7,6 +7,7 @@ use reth::{
 pub mod dirs;
 pub mod genesis;
 pub mod receipts;
+pub mod state;
 
 pub fn run() -> eyre::Result<()> {
     dotenv::dotenv().ok();
@@ -20,6 +21,7 @@ pub fn run() -> eyre::Result<()> {
     match opt.command {
         Commands::Genesis(command) => runner.run_command_until_exit(|ctx| command.execute(ctx)),
         Commands::Receipts(command) => runner.run_command_until_exit(|ctx| command.execute(ctx)),
+        Commands::State(command) => runner.run_command_until_exit(|ctx| command.execute(ctx)),
     }
 }
 
@@ -32,6 +34,9 @@ pub enum Commands {
     /// Load Receipts
     #[command(name = "receipts")]
     Receipts(receipts::Command),
+    /// Load the world state trie
+    #[command(name = "state")]
+    State(state::Command),
 }
 
 #[derive(Parser)]

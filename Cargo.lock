@@ -3275,6 +3275,7 @@ dependencies = [
  "aws-smithy-http",
  "base64 0.21.0",
  "bytes",
+ "cita_trie",
  "clap",
  "confy",
  "dotenv",
@@ -3282,6 +3283,7 @@ dependencies = [
  "fdlimit",
  "flate2",
  "futures",
+ "hasher",
  "itertools 0.10.5",
  "once_cell",
  "rayon",
@@ -3308,6 +3310,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "triehash",
 ]
 
 [[package]]
