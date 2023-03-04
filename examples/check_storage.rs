@@ -9,5 +9,7 @@ fn main() {
     let value = serde_json::from_str::<Value>(&file_content).unwrap();
     println!("Time after: {:?}", time.elapsed());
     let account = "0x4200000000000000000000000000000000000006";
-    println!("Account value: {}", value.get("alloc").unwrap());
+    println!("Account value: {:#?}", value.get(account).unwrap());
+    // println!("First storage value: {:#?}", value.get(account).unwrap().get("0x0000000000000000000000000000000000000000"));
+    // println!("")
 }
