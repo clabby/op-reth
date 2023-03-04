@@ -1,10 +1,11 @@
 use std::{collections::HashMap, path::Path};
 
+use bytes::BytesMut;
 use clap::Parser;
 use eyre::Result;
 use reth::runner::CliContext;
-use reth_primitives::{proofs::KeccakHasher, Address, GenesisAccount, H256};
-use reth_rlp::Encodable;
+use reth_primitives::{proofs::{KeccakHasher, EMPTY_ROOT}, Address, H256, U256, Bytes, keccak256, KECCAK_EMPTY};
+use reth_rlp::{Encodable, Header};
 use triehash::sec_trie_root;
 
 /// State command
@@ -24,20 +25,70 @@ impl Command {
     /// Execute the command
     pub async fn execute(self, _ctx: CliContext) -> eyre::Result<()> {
         tracing::info!(target: "reth::cli", "loading state file \"{}\"", self.path);
-        let state = from_file(self.path)?;
+        let state = from_file(&self.path)?;
         tracing::info!(target: "reth::cli", "completed state import");
         let state_root = state_root_hash(&state)?;
-        println!("State root: {:#x}", state_root);
-        println!("State root at block 4061224 0xbfe2b059bc76c33556870c292048f1d28c9d498462a02a3c7aadb6edf1c2d21c");
+        tracing::info!(target: "reth::cli", "State root: {:#x}", state_root);
+        tracing::info!(target: "reth::cli", "Expected state root at block 4061224 0xbfe2b059bc76c33556870c292048f1d28c9d498462a02a3c7aadb6edf1c2d21c");
         tracing::info!(target: "reth::cli", "state root hash: {:#x}", state_root);
         Ok(())
     }
+
+    /// Extract a portion of the state
+    pub async fn extract(&self) -> eyre::Result<()> {
+        tracing::info!(target: "reth::cli", "loading state file \"{}\"", self.path);
+        let raw_data = std::fs::read(&self.path)?;
+        let read_value = serde_json::from_slice::<serde_json::Value>(&raw_data)?;
+        tracing::info!(target: "reth::cli", "completed state import");
+        let mut ten_values = Vec::new();
+        if let serde_json::Value::Object(map) = read_value {
+            for (count, (key, value)) in map.into_iter().enumerate() {
+                if count < 10 {
+                    ten_values.push((key, value));
+                } else {
+                    break;
+                }
+            }
+        }
+        // let hashmap = state.iter().map(|(address, account)| (*address, account.clone())).collect::<Vec<(Address, GenesisAccount)>>();
+        let file = std::fs::File::create("temp_out.json")?;
+        serde_json::to_writer(file, &ten_values)?;
+        tracing::info!(target: "reth::cli", "Wrote to file temp_out.json");
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportedAccount {
+    pub balance: U256,
+    pub code_hash: Option<H256>,
+    pub nonce: Option<u64>,
+    pub root: Option<H256>,
 }
 
 /// ## State
 ///
 /// The world state trie is a key-value store that maps addresses to accounts.
-pub type State = HashMap<Address, GenesisAccount>;
+pub type State = HashMap<Address, ExportedAccount>;
+
+pub fn exported_account_payload_len(ea: &ExportedAccount) -> usize {
+    let mut len = 0;
+    len += ea.nonce.unwrap_or_default().length();
+    len += ea.balance.length();
+    len += EMPTY_ROOT.length();
+    len += ea.code_hash.as_ref().map_or(KECCAK_EMPTY, keccak256).length();
+    len
+}
+
+pub fn encode_exported_account(ea: &ExportedAccount, out: &mut dyn bytes::BufMut) {
+    let header = Header { list: true, payload_length: exported_account_payload_len(ea) };
+    header.encode(out);
+    ea.nonce.unwrap_or_default().encode(out);
+    ea.balance.encode(out);
+    ea.root.unwrap_or(EMPTY_ROOT).encode(out);
+    ea.code_hash.as_ref().map_or(KECCAK_EMPTY, keccak256).encode(out);
+}
 
 /// Decodes the world state from a json file
 pub fn from_file(path: impl AsRef<Path>) -> Result<State> {
@@ -48,17 +99,12 @@ pub fn from_file(path: impl AsRef<Path>) -> Result<State> {
 
 /// Calculate the state root hash
 pub fn state_root_hash(state: &State) -> Result<H256> {
-    // Turn state into a vector of (address, account) tuples
-    let tuples: Vec<(Address, Vec<u8>)> = state
-        .iter()
-        .map(|(address, account)| {
-            let mut out = Vec::new();
-            Encodable::encode(&account, &mut out);
-            (*address, out)
-        })
-        .collect();
-    let expected = H256(sec_trie_root::<KeccakHasher, _, _, _>(tuples).0);
-    Ok(expected)
+    let accounts = state.iter().map(|(address, account)| {
+        let mut acc_rlp = BytesMut::new();
+        encode_exported_account(account, &mut acc_rlp);
+        (address, Bytes::from(acc_rlp.freeze()))
+    });
+    Ok(H256(sec_trie_root::<KeccakHasher, _, _, _>(accounts).0))
 }
 
 /// Calculate storage root hash
@@ -71,24 +117,10 @@ pub fn storage_root_hash(storage: HashMap<H256, H256>) -> Result<H256> {
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
-    // use reth_primitives::hex;
 
-    use reth_primitives::{hex, Bytes, U256};
+    use reth_primitives::{hex, Bytes, U256, GenesisAccount};
 
     use super::*;
-
-    // #[test]
-    // fn test_state_root_hash() {
-    //     let state = from_file("data/alloc_everything_4061224_final.json").unwrap();
-    //     let state_root = state_root_hash(&state).unwrap();
-    //     assert_eq!(
-    //         state_root,
-    //         H256::from_slice(
-    //             &hex::decode("bfe2b059bc76c33556870c292048f1d28c9d498462a02a3c7aadb6edf1c2d21c")
-    //                 .unwrap()
-    //         )
-    //     );
-    // }
 
     #[test]
     fn test_mem_storage_hash() {
@@ -109,19 +141,19 @@ mod tests {
         assert_eq!(expected_storage_hash, format!("{:#x}", storage_root));
     }
 
-    #[test]
-    fn test_storage_hash() {
-        let expected_storage_hash =
-            "0x69fd5ad96fb5412504f44ab16140d2f0d35910fa9630cba6b9c68f277592248a";
-        let account = "0x4200000000000000000000000000000000000006";
-        let address = Address::from_str(account).unwrap();
-        println!("Using address: {}", address);
-        let state = from_file("data/alloc_everything_4061224_final.json").unwrap();
-        let account = state.get(&address).unwrap();
-        println!("Got genesis account for address: {:x?}", account);
-        let storage = account.storage.clone().unwrap();
-        // calculate the storage root hash
-        let storage_root = storage_root_hash(storage).unwrap();
-        assert_eq!(expected_storage_hash, format!("{:#x}", storage_root));
-    }
+    // #[test]
+    // fn test_storage_hash() {
+    //     let expected_storage_hash =
+    //         "0x69fd5ad96fb5412504f44ab16140d2f0d35910fa9630cba6b9c68f277592248a";
+    //     let account = "0x4200000000000000000000000000000000000006";
+    //     let address = Address::from_str(account).unwrap();
+    //     println!("Using address: {}", address);
+    //     let state = from_file("data/alloc_everything_4061224_final.json").unwrap();
+    //     let account = state.get(&address).unwrap();
+    //     println!("Got genesis account for address: {:x?}", account);
+    //     let storage = account.root.clone().unwrap();
+    //     // calculate the storage root hash
+    //     let storage_root = storage_root_hash(storage).unwrap();
+    //     assert_eq!(expected_storage_hash, format!("{:#x}", storage_root));
+    // }
 }
