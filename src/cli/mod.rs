@@ -4,6 +4,7 @@ use reth::{
     runner::CliRunner,
 };
 
+pub mod block_headers;
 pub mod dirs;
 pub mod genesis;
 pub mod receipts;
@@ -20,6 +21,9 @@ pub fn run() -> eyre::Result<()> {
     match opt.command {
         Commands::Genesis(command) => runner.run_command_until_exit(|ctx| command.execute(ctx)),
         Commands::Receipts(command) => runner.run_command_until_exit(|ctx| command.execute(ctx)),
+        Commands::BlockHeaders(command) => {
+            runner.run_command_until_exit(|ctx| command.execute(ctx))
+        }
     }
 }
 
@@ -32,6 +36,9 @@ pub enum Commands {
     /// Load Receipts
     #[command(name = "receipts")]
     Receipts(receipts::Command),
+    /// Load Block Headers
+    #[command(name = "block-headers")]
+    BlockHeaders(block_headers::Command),
 }
 
 #[derive(Parser)]
