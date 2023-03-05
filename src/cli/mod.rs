@@ -7,7 +7,7 @@ use reth::{
 /// RETH Database
 pub mod db;
 
-pub mod block_headers;
+pub mod blocks;
 pub mod dirs;
 pub mod genesis;
 pub mod pipeline;
@@ -27,10 +27,7 @@ pub fn run() -> eyre::Result<()> {
         Commands::Genesis(command) => runner.run_command_until_exit(|ctx| command.execute(ctx)),
         Commands::Receipts(command) => runner.run_command_until_exit(|ctx| command.execute(ctx)),
         Commands::State(command) => runner.run_command_until_exit(|ctx| command.execute(ctx)),
-        Commands::BlockHeaders(command) => {
-            runner.run_command_until_exit(|ctx| command.execute(ctx))
-        }
-        _ => runner.run_command_until_exit(|ctx| pipeline.execute(ctx)),
+        Commands::Blocks(command) => runner.run_command_until_exit(|ctx| command.execute(ctx)),
     }
 }
 
@@ -46,9 +43,9 @@ pub enum Commands {
     /// Load the world state trie
     #[command(name = "state")]
     State(state::Command),
-    /// Load Block Headers
-    #[command(name = "block-headers")]
-    BlockHeaders(block_headers::Command),
+    /// Load Blocks
+    #[command(name = "blocks")]
+    Blocks(blocks::Command),
 }
 
 #[derive(Parser)]
