@@ -4,12 +4,12 @@ use reth::{
     runner::CliRunner,
 };
 
-/// RETH Database
 pub mod db;
 
 pub mod blocks;
 pub mod dirs;
 pub mod genesis;
+pub mod node;
 pub mod receipts;
 pub mod state;
 
@@ -27,6 +27,7 @@ pub fn run() -> eyre::Result<()> {
         Commands::Receipts(command) => runner.run_command_until_exit(|ctx| command.execute(ctx)),
         Commands::State(command) => runner.run_command_until_exit(|ctx| command.execute(ctx)),
         Commands::Blocks(command) => runner.run_command_until_exit(|ctx| command.execute(ctx)),
+        Commands::Run => runner.run_command_until_exit(|_| node::run()),
     }
 }
 
@@ -45,6 +46,9 @@ pub enum Commands {
     /// Load Blocks
     #[command(name = "blocks")]
     Blocks(blocks::Command),
+    /// Run
+    #[command(name = "run")]
+    Run,
 }
 
 #[derive(Parser)]

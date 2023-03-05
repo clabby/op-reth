@@ -1,7 +1,13 @@
 use crate::cli::db;
-use clap::{crate_version, Parser};
+use clap::Parser;
+use eyre::Result;
 use reth::runner::CliContext;
-use reth_db::{database::Database, tables, transaction::DbTx};
+use reth_db::{
+    database::Database,
+    mdbx::{Env, WriteMap},
+    tables,
+    transaction::DbTx,
+};
 use reth_primitives::{
     rpc::{Bloom, H160, H256},
     rpc_utils::rlp::{Decodable, Rlp},
@@ -23,7 +29,7 @@ pub struct ErigonBlock {
 impl From<ErigonBlock> for SealedBlock {
     fn from(block: ErigonBlock) -> Self {
         let header = Header::from(block.header).seal_slow();
-        let txs = block.txs.into_iter().map(|tx| TransactionSigned::from(tx)).collect();
+        let txs = block.txs.into_iter().map(TransactionSigned::from).collect();
         let uncles =
             block.uncles.into_iter().map(|header| Header::from(header).seal_slow()).collect();
         Self { header, body: txs, ommers: uncles, withdrawals: None }
@@ -79,8 +85,7 @@ impl From<ErigonHeader> for Header {
             gas_used: header.gas_used,
             timestamp: header.timestamp,
             mix_hash: reth_primitives::H256::from_slice(&header.mix_hash.0),
-            nonce: reth_primitives::U64::from_little_endian(&header.block_nonce.as_slice())
-                .as_u64(),
+            nonce: reth_primitives::U64::from_little_endian(header.block_nonce.as_slice()).as_u64(),
             base_fee_per_gas: None,
             extra_data: Bytes::from(header.extra_data),
         }
@@ -146,7 +151,7 @@ impl From<LegacyTx> for TransactionSigned {
     fn from(tx: LegacyTx) -> Self {
         let unsigned_tx = Transaction::Legacy(TxLegacy {
             chain_id: None,
-            nonce: tx.nonce.into(),
+            nonce: tx.nonce,
             gas_price: tx.gas_price,
             gas_limit: tx.gas,
             to: if let Some(to) = tx.to {
@@ -154,13 +159,13 @@ impl From<LegacyTx> for TransactionSigned {
             } else {
                 TransactionKind::Create
             },
-            value: tx.value.into(),
+            value: tx.value,
             input: Bytes::from(tx.data),
         });
 
         let signature = Signature {
-            r: tx.r.into(),
-            s: tx.s.into(),
+            r: tx.r,
+            s: tx.s,
             // An odd v means that the odd y-parity of the signature is true.
             odd_y_parity: (tx.v % U256::from(2)) == U256::from(1),
         };
@@ -204,70 +209,54 @@ pub struct Command {
     database: String,
 }
 
-impl Command {
-    /// Execute `node` command
-    pub async fn execute(self, _ctx: CliContext) -> eyre::Result<()> {
-        tracing::debug!(target: "reth::cli", "loading block dump file. CLI version: {}", crate_version!());
+/// Apply genesis state to the given database
+pub async fn apply(db: &mut Env<WriteMap>, path: Option<&str>) -> Result<()> {
+    let contents = fs::read(path.unwrap_or("data/export_0_4061224"))?;
+    let rlp = Rlp::new(&contents);
 
-        // Load the block dump file from the specified path
-        let contents = fs::read(self.path)?;
+    let mut blocks: Vec<SealedBlock> = Vec::with_capacity(4_061_227);
+    for block in rlp.iter() {
+        let erigon_block: Result<ErigonBlock, _> = Decodable::decode(&block);
+        if let Ok(erigon_block) = erigon_block {
+            blocks.push(erigon_block.into());
+        }
+    }
 
-        // Create a new Rlp stream from the block dump file
-        let rlp = Rlp::new(&contents);
+    db.create_tables()?;
 
-        tracing::debug!(target: "reth::cli", "loaded block file");
-
-        // Iterate over the Rlp stream
-        let mut rlp_iter = rlp.iter();
-
-        // Decode the block headers and store them on the heap
-        // TODO: Clean
-        let mut blocks: Vec<SealedBlock> = Vec::with_capacity(4_061_227);
-        while let Some(block) = rlp_iter.next() {
-            let erigon_block: Result<ErigonBlock, _> = Decodable::decode(&block);
-            if let Ok(erigon_block) = erigon_block {
-                blocks.push(erigon_block.into());
-            }
+    // Insert all block headers into MDBX
+    match db.update(|tx| {
+        // The following operation requires the genesis block to be present in the database
+        if let Ok(None) = tx.get::<tables::Headers>(0) {
+            eyre::bail!("Genesis block not found! Please insert it before using this command.");
         }
 
-        tracing::debug!(target: "reth::cli", "block dump file decoded, opening DB");
+        dbg!(&blocks[0]);
+        // TODO: Why is there no signature attached to the transaction within block #1?
+        for sealed_block in &blocks[1..] {
+            // TODO: Parent tx num transition
+            // I think we just need the genesis block inserted first?
 
-        // Open the database at the given path
-        let db_path = PathBuf::from(self.database);
-        let db = db::open_rw_env(db_path.as_path())?;
-
-        // Create the tables for the db (if necessary)
-        // TODO: Remove
-        tracing::debug!(target: "reth::cli", "DB opened. Creating tables (if they're not present)");
-        db.create_tables()?;
-
-        tracing::debug!(target: "reth::cli", "Inserting blocks");
-
-        // Insert all block headers into MDBX
-        match db.update(|tx| {
-            // The following operation requires the genesis block to be present in the database
-            if let Ok(None) = tx.get::<tables::Headers>(0) {
-                eyre::bail!("Genesis block not found! Please insert it before using this command.");
-            }
-
-            dbg!(&blocks[0]);
-            // TODO: Why is there no signature attached to the transaction within block #1?
-            for sealed_block in &blocks[1..] {
-                // TODO: Parent tx num transition
-                // I think we just need the genesis block inserted first?
-
-                // We have no block rewards pre-merge
-                reth_provider::insert_canonical_block(tx, sealed_block, false).unwrap();
-            }
-
-            Ok(())
-        })? {
-            Ok(_) => tracing::info!(target: "reth::cli", "Blocks inserted! 🎉"),
-            Err(err) => {
-                tracing::error!(target: "reth::cli", "Error inserting blocks into DB: {}", err)
-            }
+            // We have no block rewards pre-merge
+            reth_provider::insert_canonical_block(tx, sealed_block, false).unwrap();
         }
 
         Ok(())
+    })? {
+        Ok(_) => tracing::info!(target: "reth::cli", "Blocks inserted! 🎉"),
+        Err(err) => {
+            tracing::error!(target: "reth::cli", "Error inserting blocks into DB: {}", err)
+        }
+    }
+
+    Ok(())
+}
+
+impl Command {
+    /// Execute the command
+    pub async fn execute(self, _ctx: CliContext) -> Result<()> {
+        let db_path = PathBuf::from(self.database);
+        let mut db = db::open_rw_env(db_path.as_path())?;
+        apply(&mut db, Some(&self.path)).await
     }
 }
