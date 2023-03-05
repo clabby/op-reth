@@ -54,6 +54,12 @@ base64 = "0.21"
 itertools = "0.10"
 rlp = { version = "0.5.2", features = ["derive"] }
 
+# trie
+cita_trie = "4.0.0"
+hasher = "0.1.4"
+triehash = "0.8"
+hex = "0.4.3"
+
 [patch.crates-io]
 revm = { git = "https://github.com/bluealloy/revm" }
 revm-primitives = { git = "https://github.com/bluealloy/revm" }

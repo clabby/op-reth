@@ -11,7 +11,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Parser)]
 pub struct Command {
     /// The path to the receipts export
-    #[arg(long, value_name = "RECEIPTS", verbatim_doc_comment, default_value = "data/")]
+    #[arg(
+        long,
+        value_name = "RECEIPTS",
+        verbatim_doc_comment,
+        default_value = "data/export_receipt_0_4061223"
+    )]
     path: String,
 }
 
