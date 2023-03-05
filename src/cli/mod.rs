@@ -10,6 +10,7 @@ pub mod db;
 pub mod block_headers;
 pub mod dirs;
 pub mod genesis;
+pub mod pipeline;
 pub mod receipts;
 pub mod state;
 
@@ -29,6 +30,7 @@ pub fn run() -> eyre::Result<()> {
         Commands::BlockHeaders(command) => {
             runner.run_command_until_exit(|ctx| command.execute(ctx))
         }
+        _ => runner.run_command_until_exit(|ctx| pipeline.execute(ctx)),
     }
 }
 
