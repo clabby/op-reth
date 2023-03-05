@@ -3284,6 +3284,7 @@ dependencies = [
  "flate2",
  "futures",
  "hasher",
+ "hex",
  "itertools 0.10.5",
  "once_cell",
  "rayon",

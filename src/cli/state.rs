@@ -1,12 +1,16 @@
 use std::{collections::HashMap, path::Path};
+use std::path::PathBuf;
 
+use crate::cli::db;
 use bytes::BytesMut;
 use clap::Parser;
 use eyre::Result;
 use reth::runner::CliContext;
-use reth_primitives::{proofs::{KeccakHasher, EMPTY_ROOT}, Address, H256, U256, Bytes, keccak256, KECCAK_EMPTY};
+use reth_primitives::{proofs::{KeccakHasher, EMPTY_ROOT}, StorageEntry, Account, Address, H256, U256, Bytes, keccak256, KECCAK_EMPTY};
 use reth_rlp::{Encodable, Header};
 use triehash::sec_trie_root;
+use reth_db::database::Database;
+use reth_db::{tables, transaction::DbTxMut};
 
 /// State command
 #[derive(Debug, Parser)]
@@ -43,10 +47,35 @@ impl Command {
         // Insert world state into MDBX
         tracing::debug!(target: "reth::cli", "Inserting block world state into MDBX");
         db.update(|tx| {
-            for (address, account) in state {
-                tx.put::<tables::PlainAccountState>(address, account).unwrap();
-                tx.put::<tables::PlainStorageState>(address, account.storage).unwrap();
-                tx.put::<tables::Bytecodes>(address, account.code).unwrap();
+            for (address, account) in &state {
+                // Insert account
+                let plain_account = Account {
+                    nonce: account.nonce.unwrap_or(0),
+                    balance: account.balance,
+                    bytecode_hash: account.code_hash,
+                };
+                tx.put::<tables::PlainAccountState>(*address, plain_account).unwrap();
+
+                // Insert storage
+                if let Some(storage) = &account.storage {
+                    for (key, value) in storage {
+                        let storage_entry = StorageEntry {
+                            key: *key,
+                            value: *value,
+                        };
+                        tx.put::<tables::PlainStorageState>(*address, storage_entry).unwrap();
+                    }
+                }
+
+                // Insert bytecode
+                if let Some(hash) = account.code_hash {
+                    let bytecode = if let Some(code) = &account.code {
+                        Bytes::from(hex::decode(code).unwrap_or(vec![]))
+                    } else {
+                        Bytes::from(vec![])
+                    };
+                    tx.put::<tables::Bytecodes>(hash, bytecode.to_vec()).unwrap();
+                }
             }
         })?;
         tracing::debug!(target: "reth::cli", "World State inserted!");
@@ -55,7 +84,7 @@ impl Command {
     }
 
     /// Extract a portion of the state
-    pub async fn export(&self, max: u64) -> eyre::Result<()> {
+    pub async fn export(&self, max: usize) -> eyre::Result<()> {
         let raw_data = std::fs::read(&self.path)?;
         let read_value = serde_json::from_slice::<serde_json::Value>(&raw_data)?;
         let mut ten_values = Vec::new();
@@ -83,7 +112,7 @@ pub struct ExportedAccount {
     pub code: Option<String>,
     pub nonce: Option<u64>,
     pub root: Option<H256>,
-    pub storage: Option<HashMap<H256, H256>>
+    pub storage: Option<HashMap<H256, U256>>
 }
 
 /// ## State

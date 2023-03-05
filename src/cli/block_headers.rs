@@ -152,7 +152,7 @@ impl Command {
         tracing::debug!(target: "reth::cli", "loaded block headers file");
 
         // Iterate over the Rlp stream
-        let iter = rlp.iter();
+        let mut iter = rlp.iter();
 
         // Decode the block headers and store them on the heap
         let mut headers: Vec<Header> = Vec::with_capacity(4_061_227);
