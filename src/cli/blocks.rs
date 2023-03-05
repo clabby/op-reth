@@ -1,7 +1,7 @@
 use crate::cli::db;
 use clap::{crate_version, Parser};
 use reth::runner::CliContext;
-use reth_db::database::Database;
+use reth_db::{database::Database, tables, transaction::DbTx};
 use reth_primitives::{
     rpc::{Bloom, H160, H256},
     rpc_utils::rlp::{Decodable, Rlp},
@@ -11,6 +11,7 @@ use reth_primitives::{
 use serde::Serialize;
 use std::{fs, path::PathBuf};
 
+/// A clone of erigon's block type
 #[derive(Debug, Serialize)]
 pub struct ErigonBlock {
     pub header: ErigonHeader,
@@ -125,6 +126,8 @@ impl Decodable for ErigonHeader {
     }
 }
 
+/// A legacy Ethereum transaction
+/// l2geth was pre-berlin, so it only uses the legacy transaction schema
 #[derive(Debug, Serialize)]
 pub struct LegacyTx {
     pub nonce: u64,
@@ -141,28 +144,28 @@ pub struct LegacyTx {
 /// Convert a [LegacyTx] to a [TransactionSigned]
 impl From<LegacyTx> for TransactionSigned {
     fn from(tx: LegacyTx) -> Self {
-        Self {
-            hash: H256::zero().into(),
-            signature: Signature {
-                r: tx.r.into(),
-                s: tx.s.into(),
-                // An odd v means that the odd y-parity of the signature is true.
-                odd_y_parity: (tx.v % U256::from(2)) == U256::from(1),
+        let unsigned_tx = Transaction::Legacy(TxLegacy {
+            chain_id: None,
+            nonce: tx.nonce.into(),
+            gas_price: tx.gas_price,
+            gas_limit: tx.gas,
+            to: if let Some(to) = tx.to {
+                TransactionKind::Call(to.into())
+            } else {
+                TransactionKind::Create
             },
-            transaction: Transaction::Legacy(TxLegacy {
-                chain_id: None,
-                nonce: tx.nonce.into(),
-                gas_price: tx.gas_price,
-                gas_limit: tx.gas,
-                to: if let Some(to) = tx.to {
-                    TransactionKind::Call(to.into())
-                } else {
-                    TransactionKind::Create
-                },
-                value: tx.value.into(),
-                input: Bytes::from(tx.data),
-            }),
-        }
+            value: tx.value.into(),
+            input: Bytes::from(tx.data),
+        });
+
+        let signature = Signature {
+            r: tx.r.into(),
+            s: tx.s.into(),
+            // An odd v means that the odd y-parity of the signature is true.
+            odd_y_parity: (tx.v % U256::from(2)) == U256::from(1),
+        };
+
+        TransactionSigned::from_transaction_and_signature(unsigned_tx, signature)
     }
 }
 
@@ -188,7 +191,12 @@ impl Decodable for LegacyTx {
 #[derive(Debug, Parser)]
 pub struct Command {
     /// The path to the block dump file
-    #[arg(long, value_name = "BLOCKS", verbatim_doc_comment, default_value = "blocks_export")]
+    #[arg(
+        long,
+        value_name = "BLOCK_DUMP_PATH",
+        verbatim_doc_comment,
+        default_value = "blocks_export"
+    )]
     path: String,
 
     /// The path to the database
@@ -199,7 +207,7 @@ pub struct Command {
 impl Command {
     /// Execute `node` command
     pub async fn execute(self, _ctx: CliContext) -> eyre::Result<()> {
-        tracing::debug!(target: "reth::cli", "loading block dump file {}", crate_version!());
+        tracing::debug!(target: "reth::cli", "loading block dump file. CLI version: {}", crate_version!());
 
         // Load the block dump file from the specified path
         let contents = fs::read(self.path)?;
@@ -229,20 +237,36 @@ impl Command {
         let db = db::open_rw_env(db_path.as_path())?;
 
         // Create the tables for the db (if necessary)
+        // TODO: Remove
         tracing::debug!(target: "reth::cli", "DB opened. Creating tables (if they're not present)");
         db.create_tables()?;
 
         tracing::debug!(target: "reth::cli", "Inserting blocks");
 
         // Insert all block headers into MDBX
-        db.update(|tx| {
-            for sealed_block in &blocks {
-                // TODO: Ask proto about block reward / parent tx num transition
-                reth_provider::insert_block(tx, sealed_block, false, None).unwrap();
+        match db.update(|tx| {
+            // The following operation requires the genesis block to be present in the database
+            if let Ok(None) = tx.get::<tables::Headers>(0) {
+                eyre::bail!("Genesis block not found! Please insert it before using this command.");
             }
-        })?;
 
-        tracing::debug!(target: "reth::cli", "Legacy blocks inserted!");
+            dbg!(&blocks[0]);
+            // TODO: Why is there no signature attached to the transaction within block #1?
+            for sealed_block in &blocks[1..] {
+                // TODO: Parent tx num transition
+                // I think we just need the genesis block inserted first?
+
+                // We have no block rewards pre-merge
+                reth_provider::insert_canonical_block(tx, sealed_block, false).unwrap();
+            }
+
+            Ok(())
+        })? {
+            Ok(_) => tracing::info!(target: "reth::cli", "Blocks inserted! 🎉"),
+            Err(err) => {
+                tracing::error!(target: "reth::cli", "Error inserting blocks into DB: {}", err)
+            }
+        }
 
         Ok(())
     }
