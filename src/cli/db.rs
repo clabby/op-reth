@@ -15,30 +15,35 @@ pub async fn construct() -> eyre::Result<Env<WriteMap>> {
     // Create a database at a new location
     let db_path = PathBuf::from("op-reth-db");
     let mut db = open_rw_env(db_path.as_path())?;
+    println!("Created db");
 
     // Apply genesis state
     if let Err(e) = genesis::apply(&mut db, None).await {
         eprintln!("Error while applying genesis to mdbx: {}", e);
         return Err(e)
     }
+    println!("Applied genesis state!");
 
     // Apply blocks
     if let Err(e) = blocks::apply(&mut db, None).await {
         eprintln!("Error while applying blocks to mdbx: {}", e);
         return Err(e)
     }
+    println!("Applied blocks!");
 
     // Apply receipts
     if let Err(e) = receipts::apply(&mut db, None).await {
         eprintln!("Error while applying receips to mdbx: {}", e);
         return Err(e)
     }
+    println!("Applied receipts!");
 
     // Apply state
     if let Err(e) = state::apply(&mut db, None).await {
         eprintln!("Error while applying state to mdbx: {}", e);
         return Err(e)
     }
+    println!("Applied world state!");
 
     Ok(db)
 }

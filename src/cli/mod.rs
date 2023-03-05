@@ -22,6 +22,8 @@ pub fn run() -> eyre::Result<()> {
 
     let runner = CliRunner::default();
 
+    println!("Opt verbosity directive: {:?}", opt.verbosity.directive());
+
     match opt.command {
         Commands::Genesis(command) => runner.run_command_until_exit(|ctx| command.execute(ctx)),
         Commands::Receipts(command) => runner.run_command_until_exit(|ctx| command.execute(ctx)),
