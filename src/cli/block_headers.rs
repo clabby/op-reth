@@ -1,11 +1,12 @@
 use crate::cli::db;
 use clap::{crate_version, Parser};
 use reth::runner::CliContext;
-use reth_db::{database::Database, tables, transaction::DbTxMut};
+use reth_db::database::Database;
 use reth_primitives::{
     rpc::{Bloom, H160, H256},
     rpc_utils::rlp::{Decodable, Rlp},
-    Bytes, Header, U256,
+    Bytes, Header, SealedBlock, Signature, Transaction, TransactionKind, TransactionSigned,
+    TxLegacy, U256,
 };
 use serde::Serialize;
 use std::{fs, path::PathBuf};
@@ -17,16 +18,22 @@ pub struct ErigonBlock {
     pub uncles: Vec<ErigonHeader>,
 }
 
+/// Convert an [ErigonBlock] to a [SealedBlock]
+impl From<ErigonBlock> for SealedBlock {
+    fn from(block: ErigonBlock) -> Self {
+        let header = Header::from(block.header).seal_slow();
+        let txs = block.txs.into_iter().map(|tx| TransactionSigned::from(tx)).collect();
+        let uncles =
+            block.uncles.into_iter().map(|header| Header::from(header).seal_slow()).collect();
+        Self { header, body: txs, ommers: uncles, withdrawals: None }
+    }
+}
+
+/// RLP decoder for [ErigonBlock]
 impl Decodable for ErigonBlock {
     fn decode(rlp: &Rlp) -> Result<Self, reth_primitives::rpc_utils::rlp::DecoderError> {
         let header: ErigonHeader = rlp.val_at(0)?;
-
-        // TODO: This is cursed, clean up
-        let mut iter = rlp.iter();
-        iter.next(); // skip over the header
-        let txs: Vec<LegacyTx> =
-            iter.next().unwrap().iter().map(|rlp| Decodable::decode(&rlp).unwrap()).collect();
-
+        let txs = rlp.at(1)?.iter().map(|rlp| Decodable::decode(&rlp).unwrap()).collect();
         let uncles: Vec<ErigonHeader> = rlp.list_at(2)?;
 
         Ok(Self { header, uncles, txs })
@@ -53,7 +60,33 @@ pub struct ErigonHeader {
     pub block_nonce: Vec<u8>,
 }
 
-/// Decodable trait implementation for Header
+/// Convert an [ErigonHeader] to a [Header]
+impl From<ErigonHeader> for Header {
+    fn from(header: ErigonHeader) -> Self {
+        Self {
+            parent_hash: reth_primitives::H256::from_slice(&header.parent_hash.0),
+            ommers_hash: reth_primitives::H256::from_slice(&header.uncle_hash.0),
+            beneficiary: reth_primitives::H160::from_slice(&header.coinbase.0),
+            state_root: reth_primitives::H256::from_slice(&header.state_root.0),
+            transactions_root: reth_primitives::H256::from_slice(&header.tx_hash.0),
+            receipts_root: reth_primitives::H256::from_slice(&header.receipts_root.0),
+            withdrawals_root: None,
+            logs_bloom: reth_primitives::Bloom::from_slice(&header.logs_bloom.0),
+            difficulty: header.difficulty,
+            number: header.number,
+            gas_limit: header.gas_limit,
+            gas_used: header.gas_used,
+            timestamp: header.timestamp,
+            mix_hash: reth_primitives::H256::from_slice(&header.mix_hash.0),
+            nonce: reth_primitives::U64::from_little_endian(&header.block_nonce.as_slice())
+                .as_u64(),
+            base_fee_per_gas: None,
+            extra_data: Bytes::from(header.extra_data),
+        }
+    }
+}
+
+/// RLP Decoder for [ErigonHeader]
 impl Decodable for ErigonHeader {
     fn decode(rlp: &Rlp) -> Result<Self, reth_primitives::rpc_utils::rlp::DecoderError> {
         let parent_hash = rlp.val_at(0)?;
@@ -94,17 +127,46 @@ impl Decodable for ErigonHeader {
 
 #[derive(Debug, Serialize)]
 pub struct LegacyTx {
-    pub nonce: U256,
-    pub gas_price: U256,
-    pub gas: U256,
-    pub to: Vec<u8>,
-    pub value: U256,
+    pub nonce: u64,
+    pub gas_price: u128,
+    pub gas: u64,
+    pub to: Option<H160>,
+    pub value: u128,
     pub data: Vec<u8>,
     pub v: U256,
     pub r: U256,
     pub s: U256,
 }
 
+/// Convert a [LegacyTx] to a [TransactionSigned]
+impl From<LegacyTx> for TransactionSigned {
+    fn from(tx: LegacyTx) -> Self {
+        Self {
+            hash: H256::zero().into(),
+            signature: Signature {
+                r: tx.r.into(),
+                s: tx.s.into(),
+                // An odd v means that the odd y-parity of the signature is true.
+                odd_y_parity: (tx.v % U256::from(2)) == U256::from(1),
+            },
+            transaction: Transaction::Legacy(TxLegacy {
+                chain_id: None,
+                nonce: tx.nonce.into(),
+                gas_price: tx.gas_price,
+                gas_limit: tx.gas,
+                to: if let Some(to) = tx.to {
+                    TransactionKind::Call(to.into())
+                } else {
+                    TransactionKind::Create
+                },
+                value: tx.value.into(),
+                input: Bytes::from(tx.data),
+            }),
+        }
+    }
+}
+
+/// RLP Decoder for [LegacyTx]
 impl Decodable for LegacyTx {
     fn decode(rlp: &Rlp) -> Result<Self, reth_primitives::rpc_utils::rlp::DecoderError> {
         let nonce = rlp.val_at(0)?;
@@ -121,16 +183,11 @@ impl Decodable for LegacyTx {
     }
 }
 
-/// Genesis command
+/// Block command
 #[derive(Debug, Parser)]
 pub struct Command {
-    /// The path to the block header dump file
-    #[arg(
-        long,
-        value_name = "BLOCK_HEADERS",
-        verbatim_doc_comment,
-        default_value = "headers_export"
-    )]
+    /// The path to the block dump file
+    #[arg(long, value_name = "BLOCKS", verbatim_doc_comment, default_value = "blocks_export")]
     path: String,
 
     /// The path to the database
@@ -141,62 +198,30 @@ pub struct Command {
 impl Command {
     /// Execute `node` command
     pub async fn execute(self, _ctx: CliContext) -> eyre::Result<()> {
-        tracing::debug!(target: "reth::cli", "loading block_headers file {}", crate_version!());
+        tracing::debug!(target: "reth::cli", "loading block dump file {}", crate_version!());
 
-        // Load the genesis file from the specified path
+        // Load the block dump file from the specified path
         let contents = fs::read(self.path)?;
 
-        // Create a new Rlp stream from the block header dump file
+        // Create a new Rlp stream from the block dump file
         let rlp = Rlp::new(&contents);
 
-        tracing::debug!(target: "reth::cli", "loaded block headers file");
+        tracing::debug!(target: "reth::cli", "loaded block file");
 
         // Iterate over the Rlp stream
-        let mut iter = rlp.iter();
+        let mut rlp_iter = rlp.iter();
 
         // Decode the block headers and store them on the heap
-        let mut headers: Vec<Header> = Vec::with_capacity(4_061_227);
-        while let Some(block) = iter.next() {
+        // TODO: Clean
+        let mut blocks: Vec<SealedBlock> = Vec::with_capacity(4_061_227);
+        while let Some(block) = rlp_iter.next() {
             let erigon_block: Result<ErigonBlock, _> = Decodable::decode(&block);
             if let Ok(erigon_block) = erigon_block {
-                headers.push(Header {
-                    parent_hash: reth_primitives::H256::from_slice(
-                        &erigon_block.header.parent_hash.0,
-                    ),
-                    ommers_hash: reth_primitives::H256::from_slice(
-                        &erigon_block.header.uncle_hash.0,
-                    ),
-                    beneficiary: reth_primitives::H160::from_slice(&erigon_block.header.coinbase.0),
-                    state_root: reth_primitives::H256::from_slice(
-                        &erigon_block.header.state_root.0,
-                    ),
-                    transactions_root: reth_primitives::H256::from_slice(
-                        &erigon_block.header.tx_hash.0,
-                    ),
-                    receipts_root: reth_primitives::H256::from_slice(
-                        &erigon_block.header.receipts_root.0,
-                    ),
-                    withdrawals_root: None,
-                    logs_bloom: reth_primitives::Bloom::from_slice(
-                        &erigon_block.header.logs_bloom.0,
-                    ),
-                    difficulty: erigon_block.header.difficulty,
-                    number: erigon_block.header.number,
-                    gas_limit: erigon_block.header.gas_limit,
-                    gas_used: erigon_block.header.gas_used,
-                    timestamp: erigon_block.header.timestamp,
-                    mix_hash: reth_primitives::H256::from_slice(&erigon_block.header.mix_hash.0),
-                    nonce: reth_primitives::U64::from_little_endian(
-                        &erigon_block.header.block_nonce.as_slice(),
-                    )
-                    .as_u64(),
-                    base_fee_per_gas: None,
-                    extra_data: Bytes::from(erigon_block.header.extra_data),
-                });
+                blocks.push(erigon_block.into());
             }
         }
 
-        tracing::debug!(target: "reth::cli", "block_headers file decoded, opening DB");
+        tracing::debug!(target: "reth::cli", "block dump file decoded, opening DB");
 
         // Open the database at the given path
         let db_path = PathBuf::from(self.database);
@@ -206,26 +231,17 @@ impl Command {
         tracing::debug!(target: "reth::cli", "DB opened. Creating tables (if they're not present)");
         db.create_tables()?;
 
-        tracing::debug!(target: "reth::cli", "Inserting block headers");
+        tracing::debug!(target: "reth::cli", "Inserting blocks");
 
         // Insert all block headers into MDBX
         db.update(|tx| {
-            for header in &headers {
-                tx.put::<tables::Headers>(header.number, header.clone()).unwrap();
-                let block_hash = header.hash_slow();
-                tx.put::<tables::CanonicalHeaders>(header.number, block_hash).unwrap();
-                tx.put::<tables::HeaderNumbers>(block_hash, header.number).unwrap();
+            for sealed_block in &blocks {
+                // TODO: Ask proto about block reward / parent tx num transition
+                reth_provider::insert_block(tx, sealed_block, false, None).unwrap();
             }
         })?;
 
-        tracing::debug!(target: "reth::cli", "Block headers inserted!");
-
-        // Sanity checking
-        // db.view(|tx| {
-        //     let headers_cursor = tx.cursor_read::<tables::Headers>().unwrap();
-        //     let header = tx.get::<tables::Headers>(1);
-        //     dbg!(header);
-        // });
+        tracing::debug!(target: "reth::cli", "Legacy blocks inserted!");
 
         Ok(())
     }
