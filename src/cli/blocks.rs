@@ -172,7 +172,8 @@ impl Decodable for LegacyTx {
         let nonce = rlp.val_at(0)?;
         let gas_price = rlp.val_at(1)?;
         let gas = rlp.val_at(2)?;
-        let to = rlp.val_at(3)?;
+        let to = rlp.at(3)?;
+        let to = if to.is_empty() { None } else { Some(Decodable::decode(&to)?) };
         let value = rlp.val_at(4)?;
         let data = rlp.val_at(5)?;
         let v = rlp.val_at(6)?;
