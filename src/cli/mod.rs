@@ -4,6 +4,9 @@ use reth::{
     runner::CliRunner,
 };
 
+/// RETH Database
+pub mod db;
+
 pub mod block_headers;
 pub mod dirs;
 pub mod genesis;

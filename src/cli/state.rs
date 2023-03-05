@@ -19,38 +19,55 @@ pub struct Command {
         default_value = "data/alloc_everything_4061224_final.json"
     )]
     path: String,
+    /// The path to the database
+    #[arg(long, value_name = "DATABASE_PATH", verbatim_doc_comment)]
+    database: String,
 }
 
 impl Command {
     /// Execute the command
     pub async fn execute(self, _ctx: CliContext) -> eyre::Result<()> {
-        tracing::info!(target: "reth::cli", "loading state file \"{}\"", self.path);
+        // Load the state
+        tracing::info!(target: "reth::cli", "Loading State from \"{}\"", self.path);
         let state = from_file(&self.path)?;
-        tracing::info!(target: "reth::cli", "completed state import");
-        let state_root = state_root_hash(&state)?;
-        tracing::info!(target: "reth::cli", "State root: {:#x}", state_root);
-        tracing::info!(target: "reth::cli", "Expected state root at block 4061224 0xbfe2b059bc76c33556870c292048f1d28c9d498462a02a3c7aadb6edf1c2d21c");
-        tracing::info!(target: "reth::cli", "state root hash: {:#x}", state_root);
+        tracing::info!(target: "reth::cli", "World State Import Complete");
+
+        // Open the database at the given path
+        let db_path = PathBuf::from(self.database);
+        let db = db::open_rw_env(db_path.as_path())?;
+
+        // Create the tables for the db (if necessary)
+        tracing::debug!(target: "reth::cli", "DB opened. Creating tables if not present");
+        db.create_tables()?;
+
+        // Insert world state into MDBX
+        tracing::debug!(target: "reth::cli", "Inserting block world state into MDBX");
+        db.update(|tx| {
+            for (address, account) in state {
+                tx.put::<tables::PlainAccountState>(address, account).unwrap();
+                tx.put::<tables::PlainStorageState>(address, account.storage).unwrap();
+                tx.put::<tables::Bytecodes>(address, account.code).unwrap();
+            }
+        })?;
+        tracing::debug!(target: "reth::cli", "World State inserted!");
+
         Ok(())
     }
 
     /// Extract a portion of the state
-    pub async fn extract(&self) -> eyre::Result<()> {
-        tracing::info!(target: "reth::cli", "loading state file \"{}\"", self.path);
+    pub async fn export(&self, max: u64) -> eyre::Result<()> {
         let raw_data = std::fs::read(&self.path)?;
         let read_value = serde_json::from_slice::<serde_json::Value>(&raw_data)?;
-        tracing::info!(target: "reth::cli", "completed state import");
         let mut ten_values = Vec::new();
         if let serde_json::Value::Object(map) = read_value {
             for (count, (key, value)) in map.into_iter().enumerate() {
-                if count < 10 {
+                if count < max {
                     ten_values.push((key, value));
                 } else {
                     break;
                 }
             }
         }
-        // let hashmap = state.iter().map(|(address, account)| (*address, account.clone())).collect::<Vec<(Address, GenesisAccount)>>();
         let file = std::fs::File::create("temp_out.json")?;
         serde_json::to_writer(file, &ten_values)?;
         tracing::info!(target: "reth::cli", "Wrote to file temp_out.json");
@@ -63,6 +80,7 @@ impl Command {
 pub struct ExportedAccount {
     pub balance: U256,
     pub code_hash: Option<H256>,
+    pub code: Option<String>,
     pub nonce: Option<u64>,
     pub root: Option<H256>,
     pub storage: Option<HashMap<H256, H256>>
@@ -107,13 +125,6 @@ pub fn state_root_hash(state: &State) -> Result<H256> {
     });
     Ok(H256(sec_trie_root::<KeccakHasher, _, _, _>(accounts).0))
 }
-
-// /// Calculate storage root hash
-// pub fn storage_root_hash(storage: HashMap<H256, H256>) -> Result<H256> {
-//     let tuples: Vec<(H256, H256)> = storage.iter().map(|(key, value)| (*key, *value)).collect();
-//     let expected = H256(sec_trie_root::<KeccakHasher, _, _, _>(tuples).0);
-//     Ok(expected)
-// }
 
 #[cfg(test)]
 mod tests {
