@@ -59,6 +59,7 @@ cita_trie = "4.0.0"
 hasher = "0.1.4"
 triehash = "0.8"
 hex = "0.4.3"
+ctrlc = "3.2.5"
 
 [patch.crates-io]
 revm = { git = "https://github.com/bluealloy/revm" }
