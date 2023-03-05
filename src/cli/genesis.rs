@@ -5,7 +5,18 @@ use reth_db::{database::Database, tables, transaction::DbTxMut};
 use clap::Parser;
 use eyre::Result;
 use reth::runner::CliContext;
-use reth_primitives::{Address, GenesisAccount};
+use reth_primitives::{
+    Address,
+    GenesisAccount,
+    keccak256,
+    SealedBlock,
+    SealedHeader,
+    Account as RethAccount,
+    StorageEntry,
+    Header,
+    H256,
+    U256
+};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::db;
@@ -27,7 +38,7 @@ impl Command {
         // Load the genesis file
         tracing::info!(target: "reth::cli", "loading genesis file {}", self.path);
         let genesis = Genesis::from_file(self.path)?;
-        tracing::debug!(target: "reth::cli", genesis = ?genesis, "genesis file loaded");
+        tracing::debug!(target: "reth::cli", "genesis file loaded");
 
         // Write genesis to mdbx
         tracing::info!(target: "reth::cli", "writing genesis to mdbx");
@@ -38,16 +49,45 @@ impl Command {
         tracing::debug!(target: "reth::cli", "DB opened, creating tables");
         db.create_tables()?;
 
-        // Insert genesis into MDBX
-        tracing::debug!(target: "reth::cli", "Inserting genesis into MDBX");
+        // Insert the genesis block header
+        tracing::debug!(target: "reth::cli", "DB opened, creating tables");
         db.update(|tx| {
-            let iterables = genesis.config.map();
-            for (k, v) in iterables {
-                tx.put::<tables::Config>(k.as_bytes().to_vec(), v).unwrap();
-            }
-        })?;
+            let genesis_header: Header = genesis.to_header();
+            let header: SealedHeader = genesis_header.seal_slow();
+            let genesis_block = SealedBlock { header, body: vec![], ommers: vec![], withdrawals: None };
+            let _ = reth_provider::insert_canonical_block(tx, &genesis_block, false);
+        });
 
-        tracing::debug!(target: "reth::cli", "Block headers inserted!");
+        // Insert genesis state into MDBX
+        db.update(|tx| {
+            let _ = genesis.alloc.iter().try_for_each(|(address, account)| -> eyre::Result<()> {
+                let has_code = !account.code.clone().unwrap_or_default().is_empty();
+                let code_hash = if has_code { Some(keccak256(&account.code.clone().unwrap())) } else { None };
+                tx.put::<tables::PlainAccountState>(
+                    *address,
+                    RethAccount {
+                        balance: account.balance,
+                        nonce: account.nonce.unwrap_or(0),
+                        bytecode_hash: code_hash,
+                    },
+                )?;
+                if let Some(code_hash) = code_hash {
+                    tx.put::<tables::Bytecodes>(code_hash, account.code.clone().unwrap_or_default().to_vec())?;
+                }
+                if let Some(s) = &account.storage {
+                    s.iter().try_for_each(|(k, v)| {
+                        tx.put::<tables::PlainStorageState>(
+                            *address,
+                            StorageEntry { key: H256::from_slice(&k.to_fixed_bytes()), value: U256::from_be_bytes(v.0) },
+                        )
+                    })?;
+                }
+
+                Ok(())
+            });
+        });
+
+        tracing::debug!(target: "reth::cli", "MDBX Genesis Set");
 
         Ok(())
     }
@@ -150,6 +190,16 @@ pub struct Genesis {
     pub gas_limit: String,
     pub extradata: String,
     pub alloc: HashMap<Address, GenesisAccount>,
+}
+
+impl Genesis {
+    pub fn to_header(&self) -> Header {
+        let mut header = Header::default();
+        header.difficulty = self.difficulty.parse().unwrap();
+        header.gas_limit = self.gas_limit.parse().unwrap();
+        header.extra_data = reth_primitives::Bytes::from(self.extradata.as_bytes());
+        header
+    }
 }
 
 impl Genesis {
