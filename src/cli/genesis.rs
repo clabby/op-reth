@@ -251,7 +251,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_write_read_genesis_db() {
-        let db_path = PathBuf::from("op-reth-db");
+        let db_path = PathBuf::from("temp-genesis-db");
         let mut db = db::open_rw_env(db_path.as_path()).unwrap();
         apply(&mut db, Some("data/genesis.json")).await.unwrap();
 
@@ -312,5 +312,7 @@ mod tests {
             },
             header
         );
+
+        std::fs::remove_dir_all(db_path).unwrap();
     }
 }
