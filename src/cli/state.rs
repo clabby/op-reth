@@ -8,7 +8,12 @@ use bytes::BytesMut;
 use clap::Parser;
 use eyre::Result;
 use reth::runner::CliContext;
-use reth_db::{database::Database, tables, transaction::DbTxMut};
+use reth_db::{
+    database::Database,
+    mdbx::{Env, WriteMap},
+    tables,
+    transaction::DbTxMut,
+};
 use reth_primitives::{
     keccak256,
     proofs::{KeccakHasher, EMPTY_ROOT},
@@ -33,56 +38,49 @@ pub struct Command {
     database: String,
 }
 
-impl Command {
-    /// Execute the command
-    pub async fn execute(self, _ctx: CliContext) -> eyre::Result<()> {
-        // Load the state
-        tracing::info!(target: "reth::cli", "Loading State from \"{}\"", self.path);
-        let state = from_file(&self.path)?;
-        tracing::info!(target: "reth::cli", "World State Import Complete");
+/// Apply world state to the given database
+pub async fn apply(db: &mut Env<WriteMap>, path: Option<&str>) -> Result<()> {
+    let file_path = path.unwrap_or("data/alloc_everything_4061224_final.json");
+    let state = from_file(file_path)?;
+    db.create_tables()?;
+    db.update(|tx| {
+        for (address, account) in &state {
+            // Insert account
+            let plain_account = Account {
+                nonce: account.nonce.unwrap_or(0),
+                balance: account.balance,
+                bytecode_hash: account.code_hash,
+            };
+            tx.put::<tables::PlainAccountState>(*address, plain_account).unwrap();
 
-        // Open the database at the given path
-        let db_path = PathBuf::from(self.database);
-        let db = db::open_rw_env(db_path.as_path())?;
-
-        // Create the tables for the db (if necessary)
-        tracing::debug!(target: "reth::cli", "DB opened. Creating tables if not present");
-        db.create_tables()?;
-
-        // Insert world state into MDBX
-        tracing::debug!(target: "reth::cli", "Inserting block world state into MDBX");
-        db.update(|tx| {
-            for (address, account) in &state {
-                // Insert account
-                let plain_account = Account {
-                    nonce: account.nonce.unwrap_or(0),
-                    balance: account.balance,
-                    bytecode_hash: account.code_hash,
-                };
-                tx.put::<tables::PlainAccountState>(*address, plain_account).unwrap();
-
-                // Insert storage
-                if let Some(storage) = &account.storage {
-                    for (key, value) in storage {
-                        let storage_entry = StorageEntry { key: *key, value: *value };
-                        tx.put::<tables::PlainStorageState>(*address, storage_entry).unwrap();
-                    }
-                }
-
-                // Insert bytecode
-                if let Some(hash) = account.code_hash {
-                    let bytecode = if let Some(code) = &account.code {
-                        Bytes::from(hex::decode(code).unwrap_or(vec![]))
-                    } else {
-                        Bytes::from(vec![])
-                    };
-                    tx.put::<tables::Bytecodes>(hash, bytecode.to_vec()).unwrap();
+            // Insert storage
+            if let Some(storage) = &account.storage {
+                for (key, value) in storage {
+                    let storage_entry = StorageEntry { key: *key, value: *value };
+                    tx.put::<tables::PlainStorageState>(*address, storage_entry).unwrap();
                 }
             }
-        })?;
-        tracing::debug!(target: "reth::cli", "World State inserted!");
 
-        Ok(())
+            // Insert bytecode
+            if let Some(hash) = account.code_hash {
+                let bytecode = if let Some(code) = &account.code {
+                    Bytes::from(hex::decode(code).unwrap_or(vec![]))
+                } else {
+                    Bytes::from(vec![])
+                };
+                tx.put::<tables::Bytecodes>(hash, bytecode.to_vec()).unwrap();
+            }
+        }
+    })?;
+    Ok(())
+}
+
+impl Command {
+    /// Execute the command
+    pub async fn execute(self, _ctx: CliContext) -> Result<()> {
+        let db_path = PathBuf::from(self.database);
+        let mut db = db::open_rw_env(db_path.as_path())?;
+        apply(&mut db, Some(&self.path)).await
     }
 
     /// Extract a portion of the state

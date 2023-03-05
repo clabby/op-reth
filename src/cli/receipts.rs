@@ -1,11 +1,18 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use eyre::Result;
 use reth::runner::CliContext;
+use reth_db::{
+    database::Database,
+    mdbx::{Env, WriteMap},
+    Error,
+};
 use reth_primitives::{rpc::H256, U256};
 use rlp::Decodable;
 use serde::{Deserialize, Serialize};
+
+use super::db;
 
 /// Receipts command
 #[derive(Debug, Parser)]
@@ -18,15 +25,33 @@ pub struct Command {
         default_value = "data/export_receipt_0_4061223"
     )]
     path: String,
+    /// The path to the database
+    #[arg(long, value_name = "DATABASE_PATH", verbatim_doc_comment)]
+    database: String,
+}
+
+/// Apply receipts to the given database
+pub async fn apply(db: &mut Env<WriteMap>, path: Option<&str>) -> Result<()> {
+    let _receipts = Receipt::from_file(path.unwrap_or("data/export_receipt_0_4061223"))?;
+    db.create_tables()?;
+    match db.update(|_tx| {
+        // TODO: apply receipts to db
+        Ok::<(), Error>(())
+    })? {
+        Ok(_) => tracing::info!(target: "reth::cli", "Receipts inserted! 🎉"),
+        Err(err) => {
+            tracing::error!(target: "reth::cli", "Error inserting receipts into MDBX: {}", err)
+        }
+    }
+    Ok(())
 }
 
 impl Command {
     /// Execute the command
-    pub async fn execute(self, _ctx: CliContext) -> eyre::Result<()> {
-        tracing::info!(target: "reth::cli", "loading receipts file \"{}\"", self.path);
-        let receipts = Receipt::from_file(self.path)?;
-        tracing::info!(target: "reth::cli", "got {} receipts", receipts.len());
-        Ok(())
+    pub async fn execute(self, _ctx: CliContext) -> Result<()> {
+        let db_path = PathBuf::from(self.database);
+        let mut db = db::open_rw_env(db_path.as_path())?;
+        apply(&mut db, Some(&self.path)).await
     }
 }
 
