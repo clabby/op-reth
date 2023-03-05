@@ -1,10 +1,14 @@
 use std::{collections::HashMap, fs::File, io::BufReader, path::Path};
+use std::path::PathBuf;
 
-use clap::{crate_version, Parser};
+use reth_db::{database::Database, tables, transaction::DbTxMut};
+use clap::Parser;
 use eyre::Result;
 use reth::runner::CliContext;
 use reth_primitives::{Address, GenesisAccount};
 use serde::{Deserialize, Serialize};
+
+use crate::cli::db;
 
 /// Genesis command
 #[derive(Debug, Parser)]
@@ -12,17 +16,38 @@ pub struct Command {
     /// The path to the genesis file
     #[arg(long, value_name = "GENESIS", verbatim_doc_comment, default_value = "genesis.json")]
     path: String,
+    /// The path to the database
+    #[arg(long, value_name = "DATABASE_PATH", verbatim_doc_comment)]
+    database: String,
 }
 
 impl Command {
     /// Execute the command
     pub async fn execute(self, _ctx: CliContext) -> eyre::Result<()> {
-        tracing::info!(target: "op-reth::genesis", "loading genesis file {}", crate_version!());
-
+        // Load the genesis file
+        tracing::info!(target: "reth::cli", "loading genesis file {}", self.path);
         let genesis = Genesis::from_file(self.path)?;
-        println!("Genesis: {:#?}", genesis);
+        tracing::debug!(target: "reth::cli", genesis = ?genesis, "genesis file loaded");
 
-        tracing::debug!(target: "op-reth::genesis", genesis = ?genesis, "genesis file loaded");
+        // Write genesis to mdbx
+        tracing::info!(target: "reth::cli", "writing genesis to mdbx");
+        let db_path = PathBuf::from(self.database);
+        let db = db::open_rw_env(db_path.as_path())?;
+
+        // Create the tables for the db (if necessary)
+        tracing::debug!(target: "reth::cli", "DB opened, creating tables");
+        db.create_tables()?;
+
+        // Insert genesis into MDBX
+        tracing::debug!(target: "reth::cli", "Inserting genesis into MDBX");
+        db.update(|tx| {
+            let iterables = genesis.config.map();
+            for (k, v) in iterables {
+                tx.put::<tables::Config>(k.as_bytes().to_vec(), v).unwrap();
+            }
+        })?;
+
+        tracing::debug!(target: "reth::cli", "Block headers inserted!");
 
         Ok(())
     }
@@ -81,6 +106,39 @@ pub struct GenesisConfig {
     #[serde(rename = "terminalTotalDifficultyPassed")]
     pub terminal_total_difficulty_passed: bool,
     pub optimism: Optimism,
+}
+
+impl GenesisConfig {
+    pub fn map(&self) -> HashMap<String, Vec<u8>> {
+        let mut map = HashMap::new();
+        let mut difficulty = vec![0u8];
+        if self.terminal_total_difficulty_passed {
+            difficulty = vec![1u8];
+        }
+        map.insert("ChainName".to_string(), self.chain_name.as_bytes().to_vec());
+        map.insert("chainId".to_string(), self.chain_id.to_le_bytes().into());
+        map.insert("homesteadBlock".to_string(), self.chain_id.to_le_bytes().into());
+        map.insert("eip150Block".to_string(), self.eip150_block.to_le_bytes().into());
+        map.insert("eip150Hash".to_string(), self.eip150_hash.as_bytes().to_vec());
+        map.insert("eip155Block".to_string(), self.eip155_block.to_le_bytes().into());
+        map.insert("eip158Block".to_string(), self.eip158_block.to_le_bytes().into());
+        map.insert("byzantiumBlock".to_string(), self.byzantium_block.to_le_bytes().into());
+        map.insert("constantinopleBlock".to_string(), self.constantinople_block.to_le_bytes().into());
+        map.insert("petersburgBlock".to_string(), self.petersburg_block.to_le_bytes().into());
+        map.insert("istanbulBlock".to_string(), self.istanbul_block.to_le_bytes().into());
+        map.insert("muirGlacierBlock".to_string(), self.muir_glacier_block.to_le_bytes().into());
+        map.insert("berlinBlock".to_string(), self.berlin_block.to_le_bytes().into());
+        map.insert("londonBlock".to_string(), self.london_block.to_le_bytes().into());
+        map.insert("arrowGlacierBlock".to_string(), self.arrow_glacier_block.to_le_bytes().into());
+        map.insert("grayGlacierBlock".to_string(), self.gray_glacier_block.to_le_bytes().into());
+        map.insert("mergeNetsplitBlock".to_string(), self.merge_netsplit_block.to_le_bytes().into());
+        map.insert("bedrockBlock".to_string(), self.bedrock_block.to_le_bytes().into());
+        map.insert("terminalTotalDifficulty".to_string(), self.terminal_total_difficulty.to_le_bytes().into());
+        map.insert("terminalTotalDifficultyPassed".to_string(), difficulty);
+        map.insert("eip1559Elasticity".to_string(), self.optimism.eip1559_elasticity.to_le_bytes().into());
+        map.insert("eip1559Denominator".to_string(), self.optimism.eip1559_denominator.to_le_bytes().into());
+        map
+    }
 }
 
 /// The genesis file object

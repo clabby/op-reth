@@ -10,6 +10,7 @@ fn main() {
     println!("Time after: {:?}", time.elapsed());
     let account = "0x4200000000000000000000000000000000000006";
     println!("Account value: {:#?}", value.get(account).unwrap());
-    // println!("First storage value: {:#?}", value.get(account).unwrap().get("0x0000000000000000000000000000000000000000"));
+    // println!("First storage value: {:#?}",
+    // value.get(account).unwrap().get("0x0000000000000000000000000000000000000000"));
     // println!("")
 }
