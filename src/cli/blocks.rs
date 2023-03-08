@@ -15,7 +15,10 @@ use reth_primitives::{
     TxLegacy, U256,
 };
 use serde::Serialize;
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 /// A clone of erigon's block type
 #[derive(Debug, Serialize)]
@@ -23,6 +26,22 @@ pub struct ErigonBlock {
     pub header: ErigonHeader,
     pub txs: Vec<LegacyTx>,
     pub uncles: Vec<ErigonHeader>,
+}
+
+/// Read [SealedBlock]s from the specified file path
+pub fn read_blocks(path: impl AsRef<Path>) -> Result<Vec<SealedBlock>> {
+    let contents = fs::read(path)?;
+    let rlp = Rlp::new(&contents);
+
+    let mut blocks: Vec<SealedBlock> = Vec::with_capacity(4_061_227);
+    for block in rlp.iter() {
+        let erigon_block: Result<ErigonBlock, _> = Decodable::decode(&block);
+        if let Ok(erigon_block) = erigon_block {
+            blocks.push(erigon_block.into());
+        }
+    }
+
+    Ok(blocks)
 }
 
 /// Convert an [ErigonBlock] to a [SealedBlock]

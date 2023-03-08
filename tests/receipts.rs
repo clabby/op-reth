@@ -39,21 +39,7 @@ async fn test_read_write_receipts() {
     let mut db = db::open_rw_env(db_path.as_path()).unwrap();
     receipts::apply(&mut db, Some(RECEIPTS_PATH)).await.unwrap();
 
-    std::fs::remove_dir_all(db_path).unwrap();
+    // TODO: receipts::apply doesn't write anything to the database yet
 
-    // Read receipts
-    // let tx = db.tx().unwrap();
-    // let address = H160::from_str("0x4200000000000000000000000000000000000011").unwrap();
-    // let account = tx.get::<tables::PlainAccountState>(address).unwrap();
-    // assert_eq!(
-    //     Some(
-    //         H256::from_str(
-    //             "0x8b846c7bbf2a0a4e6d36d5b9fd759f8fd1d2887a1b6732460e86436c8dcefc4d"
-    //         )
-    //         .unwrap()
-    //     ),
-    //     account.unwrap().bytecode_hash
-    // );
-    // assert_eq!(U256::ZERO, account.unwrap().balance);
-    // assert_eq!(0, account.unwrap().nonce);
+    std::fs::remove_dir_all(db_path).unwrap();
 }
