@@ -10,7 +10,7 @@ use eyre::Result;
 use reth::runner::CliContext;
 use reth_db::{database::Database, mdbx::WriteMap, tables, transaction::DbTxMut};
 use reth_primitives::{
-    keccak256, Account as RethAccount, Address, GenesisAccount, Header, SealedBlock, SealedHeader,
+    keccak256, Account as RethAccount, Address, Bytes, Header, SealedBlock, SealedHeader,
     StorageEntry, H256, U256,
 };
 use serde::{Deserialize, Serialize};
@@ -197,7 +197,16 @@ pub struct Genesis {
     #[serde(rename = "gasLimit")]
     pub gas_limit: String,
     pub extradata: String,
-    pub alloc: HashMap<Address, GenesisAccount>,
+    pub alloc: HashMap<Address, ErigonGenesisAccount>,
+}
+
+/// An Erigon Genesis Account
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ErigonGenesisAccount {
+    pub nonce: Option<u64>,
+    pub balance: U256,
+    pub code: Option<Bytes>,
+    pub storage: Option<HashMap<H256, H256>>,
 }
 
 impl Genesis {
@@ -205,7 +214,9 @@ impl Genesis {
         Header {
             difficulty: self.difficulty.parse().unwrap(),
             gas_limit: self.gas_limit.parse().unwrap(),
-            extra_data: reth_primitives::Bytes::from(self.extradata.as_bytes()),
+            extra_data: reth_primitives::Bytes::from(
+                hex::decode(self.extradata.strip_prefix("0x").unwrap_or(&self.extradata)).unwrap(),
+            ),
             ..Default::default()
         }
     }

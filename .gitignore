@@ -1,6 +1,7 @@
+# Rust build artifacts
 /target
 
-# Ignore geth database tar dumps
+# op-reth specific files
 *.tar
-
 data/*
+op-reth-db
